@@ -25,4 +25,6 @@ dependencies {
     testImplementation("io.ktor:ktor-server-tests:$ktor_version")
     testImplementation("org.jetbrains.kotlin:kotlin-test:$kotlin_version")
     implementation("com.google.code.gson:gson:2.8.8")
+    implementation("org.hibernate:hibernate-core:5.4.25.Final")
+    implementation ("org.postgresql:postgresql:42.1.4")
 }

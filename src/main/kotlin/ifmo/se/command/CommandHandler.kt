@@ -1,69 +1,67 @@
 package ifmo.se.command
 
+
+import ifmo.se.MusicService
+import ifmo.se.UserService
 import ifmo.se.domain.MusicCollection
 import ifmo.se.domain.MusicComposition
+import ifmo.se.domain.SessionContext
+import ifmo.se.domain.UserModel
 import ifmo.se.domain.datagen.beautify
 import ifmo.se.domain.datagen.dataLocation
 import ifmo.se.domain.datagen.toJson
-import io.ktor.network.sockets.*
+import ifmo.se.send
 import io.ktor.utils.io.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import java.io.File
-import kotlin.system.exitProcess
+import kotlin.coroutines.coroutineContext
 
 interface CommandHandler {
-    suspend fun handle(mc: MusicCollection)
+    suspend fun handleCommand(mc: MusicCollection)
 }
 
 class ListCommandHandler(private val output: ByteWriteChannel) : CommandHandler {
-    override suspend fun handle(mc: MusicCollection) {
-        val str = StringBuilder()
-        str.append("All compositions in catalog: \n")
-        mc.musicComps.forEach { str.append(it.beautify()).append("\n") }
-        str.toString().send(output)
+    override suspend fun handleCommand(mc: MusicCollection) {
+        val str = StringBuffer()
+        val musicCollection = MusicService.getAllMusicCompositions()
+        str.appendLine("All compositions in catalog:")
+        musicCollection?.forEach { str.appendLine(it.beautify()) }
+        send(str.toString().trim(), output)
     }
 }
 
 class SearchCommandHandler(private val output: ByteWriteChannel, private val input: ByteReadChannel) : CommandHandler {
-    override suspend fun handle(mc: MusicCollection) {
+    override suspend fun handleCommand(mc: MusicCollection) {
         while (true) {
-            val str = StringBuilder()
-            "Input the part of the name to find composition in the catalog:\n".send(output)
+            "Input the part of the name to find composition in the catalog:".send(output)
             val term = input.readUTF8Line()
             if (term != null) {
-                mc.musicComps.filter { smartFilter(it, term) }
-                    .forEach { str.append(it.beautify()).append("\n") }
-                str.toString().send(output)
-                break
+                val musicCompositions = MusicService.getMusicCompositionLike(term)
+                if (musicCompositions != null && musicCompositions.isNotEmpty()) {
+                    val str = StringBuilder()
+                    musicCompositions.forEach { str.append(it.beautify()).append("\n") }
+                    send(str.toString(), output)
+                    return
+                }
+                send("Didn't found any composition", output)
+                return
+
             }
         }
-    }
-
-    private fun smartFilter(item: MusicComposition, term: String): Boolean {
-        return item.author.contains(term)
-                || item.name.contains(term)
     }
 }
 
 class AddCommandHandler(private val output: ByteWriteChannel, private val input: ByteReadChannel) : CommandHandler {
-    override suspend fun handle(mc: MusicCollection) {
+    override suspend fun handleCommand(mc: MusicCollection) {
         while (true) {
-            output.writeFully("Input author's name:\n".encodeToByteArray())
+            output.writeFully("Input author's name:".encodeToByteArray())
             val author = input.readUTF8Line()
             if (author != null) {
-                output.writeFully("Input composition's name:\n".encodeToByteArray())
+                output.writeFully("Input composition's name:".encodeToByteArray())
                 val name = input.readUTF8Line()
                 if (name != null) {
-                    val item = MusicComposition(author, name)
-                    val current = mc.musicComps
-                    current.add(item)
-
-                    mc.musicComps = current
-                    mc.save()
-
-                    output.writeFully("'${item.beautify()}' successfully added to the collection.\n".encodeToByteArray())
+                    val musicComposition = MusicComposition(author, name)
+                    MusicService.addMusicComposition(musicComposition)
+                    output.writeFully("'${musicComposition.beautify()}' successfully added to the collection.\n".encodeToByteArray())
                     break
                 }
             }
@@ -72,7 +70,7 @@ class AddCommandHandler(private val output: ByteWriteChannel, private val input:
 }
 
 class DelCommandHandler(private val output: ByteWriteChannel, private val input: ByteReadChannel) : CommandHandler {
-    override suspend fun handle(mc: MusicCollection) {
+    override suspend fun handleCommand(mc: MusicCollection) {
         while (true) {
             "Input the full name of the composition to remove [Author-Composition]:\n".send(output)
             val fullName = input.readUTF8Line()
@@ -82,28 +80,36 @@ class DelCommandHandler(private val output: ByteWriteChannel, private val input:
                 val author = parsed[0]
                 val name = parsed[1]
 
-                if (mc.musicComps.find { it.author == author && it.name == name } != null) {
-                    mc.musicComps.removeIf { it.author == author && it.name == name }
-                    mc.save()
-                    "'${MusicComposition(author, name).beautify()}' successfully deleted to the collection.\n".send(
-                        output
-                    )
+                var musicComposition = MusicService.getByAuthorAndName(author, name)
+                if (musicComposition != null) {
+                    MusicService.deleteById(musicComposition.id)
+                    send("${MusicComposition(author, name).beautify()} successfully deleted to the collection",output)
                 } else
-                    "${MusicComposition(author, name).beautify()} not found.\n".send(output)
-
-                break
+                    send("${MusicComposition(author, name).beautify()} not found.\n",output)
+                return
             }
         }
     }
 }
 
-class HelpCommandHandler(private val output: ByteWriteChannel) : CommandHandler {
-    override suspend fun handle(mc: MusicCollection) {
-        helpMessage().send(output)
+class HelpCommandHandler(private val output: ByteWriteChannel, private val isAuthorizated: Boolean = false) :
+    CommandHandler {
+    override suspend fun handleCommand(mc: MusicCollection) {
+        if (isAuthorizated)
+            send(HELP_MESSAGE, output)
+        else
+            send(HELP_AUTH_MESSAGE, output)
     }
 
-    private fun helpMessage() =
-        """
+    val HELP_AUTH_MESSAGE = """
+            Available commands:
+                [register] - add new user
+                [login] - log in to the system
+                [help] - Show this message 
+                [quit] - Quit from current session
+        """.trimIndent()
+
+    val HELP_MESSAGE = """
             Available commands:
                 [list] - Show compositions in collection
                 [search] - Search composition in collection
@@ -112,6 +118,60 @@ class HelpCommandHandler(private val output: ByteWriteChannel) : CommandHandler 
                 [help] - Show this message 
                 [quit] - Quit from current session
         """.trimIndent()
+}
+
+class AuthorizationCommandHandler(
+    private val output: ByteWriteChannel,
+    private val input: ByteReadChannel,
+    private val type: AuthorizationTypes
+) : CommandHandler {
+
+    override suspend fun handleCommand(mc: MusicCollection) {
+        val loginAndPassword = askLoginAndPassword()
+        if (type == AuthorizationTypes.REGISTER)
+            register(loginAndPassword.first, loginAndPassword.second)
+        else
+            auth(loginAndPassword.first, loginAndPassword.second)
+    }
+
+    suspend fun askLoginAndPassword(): Pair<String, String> {
+        send("Enter Login:", output)
+        val login = input.readUTF8Line()
+        send("Enter Password:", output)
+        val password = input.readUTF8Line()
+        return Pair(login.toString(), password.toString())
+    }
+
+    suspend fun register(login: String, password: String) {
+        var userModel = UserService.addUser(UserModel(login,password))
+        if (userModel != null) {
+            send("Successfully registered and logged in as a $login", output)
+            coroutineContext[SessionContext]?.login = login
+        }
+        else
+            send("Сould not add a user with this login",output)
+    }
+
+    suspend fun auth(login: String, password: String) {
+        val user = UserService.getByLoginAndPassword(login,password)
+        if (user != null) {
+            send("Successfully logged in as a $login", output)
+            coroutineContext[SessionContext]?.login = login
+        }
+        else
+            send("Failed to log in, check login and password",output)
+    }
+}
+
+enum class AuthorizationTypes {
+    REGISTER,
+    LOGIN
+}
+
+class LogInCommandHandler(private val output: ByteWriteChannel, private val input: ByteReadChannel) : CommandHandler {
+    override suspend fun handleCommand(mc: MusicCollection) {
+        send(coroutineContext[SessionContext]?.login.toString(), output)
+    }
 }
 
 private fun MusicCollection.save() = File(dataLocation()).writeText(this.toJson())

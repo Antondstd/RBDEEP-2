@@ -23,7 +23,10 @@ fun main() {
             } else output.writeStringUtf8(input + "\n")
 
             toServer.read {
-                println("\t>\t ${StandardCharsets.UTF_8.decode(it)}")
+                val answer = StandardCharsets.UTF_8.decode(it).split("\n")
+                for (line in answer){
+                    println("\t>\t $line")
+                }
             }
         }
     }
